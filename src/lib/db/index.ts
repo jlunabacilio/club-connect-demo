@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS enrollments (
   currency          TEXT NOT NULL,
   status            TEXT NOT NULL,
   membership_number TEXT,
+  approved_at       TEXT,
   details_json      TEXT NOT NULL,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
@@ -37,7 +38,23 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_payments_enrollment ON payments(enrollment_id);
+
+-- Enforce global uniqueness of assigned membership numbers. Multiple NULLs
+-- are allowed (pending enrollments don't have a number yet).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_membership_number
+  ON enrollments(membership_number);
 `;
+
+/** Add columns/indexes that may be missing on databases created by an
+ *  earlier schema version. */
+function migrate(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(enrollments)")
+    .all() as { name: string }[];
+  if (!columns.some((c) => c.name === "approved_at")) {
+    db.exec("ALTER TABLE enrollments ADD COLUMN approved_at TEXT");
+  }
+}
 
 function createDb(): Database.Database {
   const dataDir = path.join(process.cwd(), "data");
@@ -47,6 +64,7 @@ function createDb(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 

@@ -370,11 +370,26 @@ function SuccessScreen({ data, result }: SuccessScreenProps) {
             {result.enrollmentId}
           </dd>
         </div>
+        {result.membershipNumber && (
+          <div className="flex justify-between gap-4 py-2 text-sm">
+            <dt className="text-slate-500">Membership number</dt>
+            <dd className="font-mono text-sm font-semibold text-emerald-700">
+              {result.membershipNumber}
+            </dd>
+          </div>
+        )}
       </dl>
-      <div className="mt-6 rounded-lg bg-indigo-50 p-3 text-sm text-indigo-800">
-        Next: your membership number will be generated and a confirmation email
-        sent (coming in a following step).
-      </div>
+      {result.membershipNumber ? (
+        <div className="mt-6 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">
+          Your membership number has been issued. Next: a confirmation email
+          (coming in a following step).
+        </div>
+      ) : (
+        <div className="mt-6 rounded-lg bg-indigo-50 p-3 text-sm text-indigo-800">
+          Next: once your identity is verified, your membership number will be
+          generated and a confirmation email sent (coming in a following step).
+        </div>
+      )}
     </div>
   );
 }
