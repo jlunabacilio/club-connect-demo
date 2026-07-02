@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { approveEnrollment, getEnrollment } from "@/lib/db/repository";
+import { getEnrollment, markVerified } from "@/lib/db/repository";
 import { finalizeEnrollment } from "@/lib/membership/finalize";
 
 // better-sqlite3 requires the Node.js runtime (not Edge).
@@ -16,21 +16,22 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  if (!approveEnrollment(id)) {
+  if (!markVerified(id)) {
     return NextResponse.json(
       { error: "Enrollment not found." },
       { status: 404 },
     );
   }
 
-  // Approval just completed — assign the number if payment is already done.
+  // Verification just passed — assign the number if payment is already done.
   const finalized = finalizeEnrollment(id);
   const enrollment = getEnrollment(id);
 
   return NextResponse.json({
     enrollmentId: id,
     status: enrollment?.status,
-    approvedAt: enrollment?.approvedAt,
+    verificationStatus: enrollment?.verificationStatus,
+    paymentStatus: enrollment?.paymentStatus,
     membershipNumber: enrollment?.membershipNumber ?? null,
     finalize: finalized,
   });

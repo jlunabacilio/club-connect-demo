@@ -39,11 +39,10 @@ export function finalizeEnrollment(enrollmentId: string): FinalizeResult {
       membershipNumber: enrollment.membershipNumber,
     };
   }
-  // Payment must have completed. "active" also implies paid.
-  if (enrollment.status !== "paid" && enrollment.status !== "active") {
+  if (enrollment.paymentStatus !== "succeeded") {
     return { status: "not_eligible", reason: "not_paid" };
   }
-  if (!enrollment.approvedAt) {
+  if (enrollment.verificationStatus !== "verified") {
     return { status: "not_eligible", reason: "not_approved" };
   }
 
@@ -52,7 +51,8 @@ export function finalizeEnrollment(enrollmentId: string): FinalizeResult {
   // first writer wins, so a number is never overwritten or issued twice.
   const assign = db.prepare(
     `UPDATE enrollments
-       SET membership_number = @number, status = 'active', updated_at = @now
+       SET membership_number = @number, status = 'active',
+           activated_at = @now, updated_at = @now
      WHERE id = @id AND membership_number IS NULL`,
   );
 

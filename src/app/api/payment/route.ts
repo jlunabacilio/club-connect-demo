@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
-import type { SignupFormData } from "@/types/membership";
 import type { PaymentResponse } from "@/types/payment";
-import { validateSignupForm } from "@/lib/validation";
+import { parseSignupPayload } from "@/lib/signup-payload";
 import { getPrice } from "@/lib/payment/pricing";
 import { processPayment } from "@/lib/payment/gateway";
 import { deriveApplicant, redactForStorage } from "@/lib/signup";
 import {
   createEnrollment,
   recordPayment,
-  updateEnrollmentStatus,
+  setPaymentStatus,
 } from "@/lib/db/repository";
 import { finalizeEnrollment } from "@/lib/membership/finalize";
 
@@ -16,9 +15,9 @@ import { finalizeEnrollment } from "@/lib/membership/finalize";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  let data: SignupFormData;
+  let raw: unknown;
   try {
-    data = (await req.json()) as SignupFormData;
+    raw = await req.json();
   } catch {
     return NextResponse.json(
       { status: "invalid", errors: { _: "Malformed request body." } },
@@ -26,12 +25,14 @@ export async function POST(req: Request) {
     );
   }
 
-  // Re-validate on the server — never trust the client.
-  const errors = validateSignupForm(data);
-  if (Object.keys(errors).length > 0) {
-    const body: PaymentResponse = { status: "invalid", errors };
+  // Safely parse & validate the untrusted payload (shape, types, enums, and
+  // field rules) before doing anything with it.
+  const parsed = parseSignupPayload(raw);
+  if (!parsed.ok) {
+    const body: PaymentResponse = { status: "invalid", errors: parsed.errors };
     return NextResponse.json(body, { status: 400 });
   }
+  const data = parsed.data;
 
   const price = getPrice(data.membershipType);
   const applicant = deriveApplicant(data);
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
   });
 
   if (outcome.status === "failed") {
-    updateEnrollmentStatus(enrollmentId, "payment_failed");
+    setPaymentStatus(enrollmentId, "failed");
     const body: PaymentResponse = {
       status: "failed",
       enrollmentId,
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
     return NextResponse.json(body, { status: 402 });
   }
 
-  updateEnrollmentStatus(enrollmentId, "paid");
+  setPaymentStatus(enrollmentId, "succeeded");
 
   // Payment just completed — if the application is already approved, the
   // membership number is issued now; otherwise it's assigned once approval
