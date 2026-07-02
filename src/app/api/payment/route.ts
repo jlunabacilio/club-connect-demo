@@ -10,6 +10,7 @@ import {
   recordPayment,
   updateEnrollmentStatus,
 } from "@/lib/db/repository";
+import { finalizeEnrollment } from "@/lib/membership/finalize";
 
 // better-sqlite3 requires the Node.js runtime (not Edge).
 export const runtime = "nodejs";
@@ -80,12 +81,23 @@ export async function POST(req: Request) {
   }
 
   updateEnrollmentStatus(enrollmentId, "paid");
+
+  // Payment just completed — if the application is already approved, the
+  // membership number is issued now; otherwise it's assigned once approval
+  // completes (see the approve endpoint).
+  const finalized = finalizeEnrollment(enrollmentId);
+  const membershipNumber =
+    finalized.status === "assigned" || finalized.status === "already_assigned"
+      ? finalized.membershipNumber
+      : undefined;
+
   const body: PaymentResponse = {
     status: "succeeded",
     enrollmentId,
     transactionId: outcome.transactionId,
     amountCents: price.amountCents,
     currency: price.currency,
+    membershipNumber,
   };
   return NextResponse.json(body, { status: 200 });
 }

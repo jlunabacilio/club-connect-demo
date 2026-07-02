@@ -1,0 +1,43 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+  deploy:
+    name: Deploy (production)
+    needs: build
+    runs-on: ubuntu-latest
+    # The `production` environment is what Jira reads to register the
+    # deployment. This is a test deploy — nothing is actually shipped.
+    environment:
+      name: production
+      url: https://club-connect.example.com
+    steps:
+      - name: Deploy to production (simulated)
+        run: |
+          echo "🚀 Deploying club-connect-demo to PRODUCTION"
+          echo "Environment: production"
+          echo "Commit: ${GITHUB_SHA}"
+          echo "This is a test deployment — no artifact is actually shipped."

@@ -9,6 +9,12 @@ export interface PaymentSuccess {
   transactionId: string;
   amountCents: number;
   currency: string;
+  /**
+   * Set when the enrollment was already approved at payment time, so the
+   * membership number is issued immediately. Otherwise it's assigned later,
+   * when approval completes.
+   */
+  membershipNumber?: string;
 }
 
 /** Failed payment outcome returned to the client (HTTP 402). */

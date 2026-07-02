@@ -5,7 +5,83 @@ import { getDb } from "./index";
 export type EnrollmentStatus =
   | "pending_payment"
   | "paid"
-  | "payment_failed";
+  | "payment_failed"
+  | "active";
+
+/** A row from the `enrollments` table, mapped to camelCase. */
+export interface EnrollmentRow {
+  id: string;
+  membershipType: MembershipType;
+  applicantName: string;
+  applicantEmail: string;
+  paymentMethod: PaymentMethodType;
+  amountCents: number;
+  currency: string;
+  status: EnrollmentStatus;
+  membershipNumber: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface EnrollmentDbRow {
+  id: string;
+  membership_type: MembershipType;
+  applicant_name: string;
+  applicant_email: string;
+  payment_method: PaymentMethodType;
+  amount_cents: number;
+  currency: string;
+  status: EnrollmentStatus;
+  membership_number: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapEnrollment(row: EnrollmentDbRow): EnrollmentRow {
+  return {
+    id: row.id,
+    membershipType: row.membership_type,
+    applicantName: row.applicant_name,
+    applicantEmail: row.applicant_email,
+    paymentMethod: row.payment_method,
+    amountCents: row.amount_cents,
+    currency: row.currency,
+    status: row.status,
+    membershipNumber: row.membership_number,
+    approvedAt: row.approved_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Fetch a single enrollment by id, or undefined if it doesn't exist. */
+export function getEnrollment(id: string): EnrollmentRow | undefined {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT * FROM enrollments WHERE id = ?")
+    .get(id) as EnrollmentDbRow | undefined;
+  return row ? mapEnrollment(row) : undefined;
+}
+
+/**
+ * Mark an enrollment as approved (e.g. after identity verification passes).
+ * Idempotent: the original approval timestamp is preserved on repeat calls.
+ * Returns true if the enrollment exists.
+ */
+export function approveEnrollment(id: string): boolean {
+  const db = getDb();
+  const info = db
+    .prepare(
+      `UPDATE enrollments
+         SET approved_at = COALESCE(approved_at, @now),
+             updated_at  = @now
+       WHERE id = @id`,
+    )
+    .run({ id, now: new Date().toISOString() });
+  return info.changes > 0;
+}
 
 export interface CreateEnrollmentInput {
   membershipType: MembershipType;
