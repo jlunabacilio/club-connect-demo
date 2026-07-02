@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { MembershipType, PaymentMethodType } from "@/types/membership";
+import type {
+  MembershipType,
+  PaymentMethodType,
+  SignupFormData,
+} from "@/types/membership";
 import { getDb } from "./index";
 
-export type EnrollmentStatus =
-  | "pending_payment"
-  | "paid"
-  | "payment_failed"
-  | "active";
+/** Overall enrollment lifecycle. */
+export type MembershipStatus = "pending" | "active" | "rejected";
+/** Identity verification outcome. */
+export type VerificationStatus = "pending" | "verified" | "rejected";
+/** Payment outcome. */
+export type PaymentStatus = "pending" | "succeeded" | "failed";
 
 /** A row from the `enrollments` table, mapped to camelCase. */
 export interface EnrollmentRow {
@@ -17,11 +22,20 @@ export interface EnrollmentRow {
   paymentMethod: PaymentMethodType;
   amountCents: number;
   currency: string;
-  status: EnrollmentStatus;
-  membershipNumber: string | null;
+  status: MembershipStatus;
+  verificationStatus: VerificationStatus;
   approvedAt: string | null;
+  paymentStatus: PaymentStatus;
+  paidAt: string | null;
+  membershipNumber: string | null;
+  activatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** An enrollment together with the full (redacted) application snapshot. */
+export interface EnrollmentWithDetails extends EnrollmentRow {
+  details: SignupFormData;
 }
 
 interface EnrollmentDbRow {
@@ -32,9 +46,14 @@ interface EnrollmentDbRow {
   payment_method: PaymentMethodType;
   amount_cents: number;
   currency: string;
-  status: EnrollmentStatus;
-  membership_number: string | null;
+  status: MembershipStatus;
+  verification_status: VerificationStatus;
   approved_at: string | null;
+  payment_status: PaymentStatus;
+  paid_at: string | null;
+  membership_number: string | null;
+  activated_at: string | null;
+  details_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -49,38 +68,15 @@ function mapEnrollment(row: EnrollmentDbRow): EnrollmentRow {
     amountCents: row.amount_cents,
     currency: row.currency,
     status: row.status,
-    membershipNumber: row.membership_number,
+    verificationStatus: row.verification_status,
     approvedAt: row.approved_at,
+    paymentStatus: row.payment_status,
+    paidAt: row.paid_at,
+    membershipNumber: row.membership_number,
+    activatedAt: row.activated_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-/** Fetch a single enrollment by id, or undefined if it doesn't exist. */
-export function getEnrollment(id: string): EnrollmentRow | undefined {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM enrollments WHERE id = ?")
-    .get(id) as EnrollmentDbRow | undefined;
-  return row ? mapEnrollment(row) : undefined;
-}
-
-/**
- * Mark an enrollment as approved (e.g. after identity verification passes).
- * Idempotent: the original approval timestamp is preserved on repeat calls.
- * Returns true if the enrollment exists.
- */
-export function approveEnrollment(id: string): boolean {
-  const db = getDb();
-  const info = db
-    .prepare(
-      `UPDATE enrollments
-         SET approved_at = COALESCE(approved_at, @now),
-             updated_at  = @now
-       WHERE id = @id`,
-    )
-    .run({ id, now: new Date().toISOString() });
-  return info.changes > 0;
 }
 
 export interface CreateEnrollmentInput {
@@ -94,7 +90,10 @@ export interface CreateEnrollmentInput {
   details: unknown;
 }
 
-/** Insert a new enrollment in the `pending_payment` state. Returns its id. */
+/**
+ * Insert a new application. All three tracked statuses start as 'pending'
+ * (overall / verification / payment). Returns the new enrollment id.
+ */
 export function createEnrollment(input: CreateEnrollmentInput): string {
   const db = getDb();
   const id = `enr_${randomUUID()}`;
@@ -103,11 +102,13 @@ export function createEnrollment(input: CreateEnrollmentInput): string {
   db.prepare(
     `INSERT INTO enrollments (
        id, membership_type, applicant_name, applicant_email,
-       payment_method, amount_cents, currency, status,
+       payment_method, amount_cents, currency,
+       status, verification_status, payment_status,
        details_json, created_at, updated_at
      ) VALUES (
        @id, @membershipType, @applicantName, @applicantEmail,
-       @paymentMethod, @amountCents, @currency, 'pending_payment',
+       @paymentMethod, @amountCents, @currency,
+       'pending', 'pending', 'pending',
        @details, @now, @now
      )`,
   ).run({
@@ -125,16 +126,87 @@ export function createEnrollment(input: CreateEnrollmentInput): string {
   return id;
 }
 
-export function updateEnrollmentStatus(
-  id: string,
-  status: EnrollmentStatus,
-): void {
+/** Fetch a single enrollment by id, or undefined if it doesn't exist. */
+export function getEnrollment(id: string): EnrollmentRow | undefined {
   const db = getDb();
+  const row = db
+    .prepare("SELECT * FROM enrollments WHERE id = ?")
+    .get(id) as EnrollmentDbRow | undefined;
+  return row ? mapEnrollment(row) : undefined;
+}
+
+/** Fetch an enrollment plus the parsed application snapshot. */
+export function getEnrollmentWithDetails(
+  id: string,
+): EnrollmentWithDetails | undefined {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT * FROM enrollments WHERE id = ?")
+    .get(id) as EnrollmentDbRow | undefined;
+  if (!row) return undefined;
+  return {
+    ...mapEnrollment(row),
+    details: JSON.parse(row.details_json) as SignupFormData,
+  };
+}
+
+/** List enrollments (newest first) for tracking/management. */
+export function listEnrollments(): EnrollmentRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT * FROM enrollments ORDER BY created_at DESC")
+    .all() as EnrollmentDbRow[];
+  return rows.map(mapEnrollment);
+}
+
+/** Update the payment status, stamping paid_at on success. */
+export function setPaymentStatus(id: string, status: PaymentStatus): void {
+  const db = getDb();
+  const now = new Date().toISOString();
   db.prepare(
     `UPDATE enrollments
-       SET status = @status, updated_at = @now
+       SET payment_status = @status,
+           paid_at = CASE WHEN @status = 'succeeded'
+                          THEN COALESCE(paid_at, @now) ELSE paid_at END,
+           updated_at = @now
      WHERE id = @id`,
-  ).run({ id, status, now: new Date().toISOString() });
+  ).run({ id, status, now });
+}
+
+/**
+ * Mark identity verification as passed. Idempotent — the original approval
+ * timestamp is kept. Returns true if the enrollment exists.
+ */
+export function markVerified(id: string): boolean {
+  const db = getDb();
+  const info = db
+    .prepare(
+      `UPDATE enrollments
+         SET verification_status = 'verified',
+             approved_at = COALESCE(approved_at, @now),
+             updated_at = @now
+       WHERE id = @id`,
+    )
+    .run({ id, now: new Date().toISOString() });
+  return info.changes > 0;
+}
+
+/**
+ * Mark identity verification as rejected, which also rejects the overall
+ * enrollment. Returns true if the enrollment exists.
+ */
+export function markRejected(id: string): boolean {
+  const db = getDb();
+  const info = db
+    .prepare(
+      `UPDATE enrollments
+         SET verification_status = 'rejected',
+             status = 'rejected',
+             updated_at = @now
+       WHERE id = @id`,
+    )
+    .run({ id, now: new Date().toISOString() });
+  return info.changes > 0;
 }
 
 export interface RecordPaymentInput {

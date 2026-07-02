@@ -9,19 +9,27 @@ const globalForDb = globalThis as unknown as {
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS enrollments (
-  id                TEXT PRIMARY KEY,
-  membership_type   TEXT NOT NULL,
-  applicant_name    TEXT NOT NULL,
-  applicant_email   TEXT NOT NULL,
-  payment_method    TEXT NOT NULL,
-  amount_cents      INTEGER NOT NULL,
-  currency          TEXT NOT NULL,
-  status            TEXT NOT NULL,
-  membership_number TEXT,
-  approved_at       TEXT,
-  details_json      TEXT NOT NULL,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
+  id                  TEXT PRIMARY KEY,
+  membership_type     TEXT NOT NULL,
+  applicant_name      TEXT NOT NULL,
+  applicant_email     TEXT NOT NULL,
+  payment_method      TEXT NOT NULL,
+  amount_cents        INTEGER NOT NULL,
+  currency            TEXT NOT NULL,
+  -- Overall lifecycle: 'pending' | 'active' | 'rejected'
+  status              TEXT NOT NULL DEFAULT 'pending',
+  -- Identity check: 'pending' | 'verified' | 'rejected'
+  verification_status TEXT NOT NULL DEFAULT 'pending',
+  approved_at         TEXT,
+  -- Payment: 'pending' | 'succeeded' | 'failed'
+  payment_status      TEXT NOT NULL DEFAULT 'pending',
+  paid_at             TEXT,
+  -- Membership details
+  membership_number   TEXT,
+  activated_at        TEXT,
+  details_json        TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS payments (
@@ -46,14 +54,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_membership_number
 `;
 
 /** Add columns/indexes that may be missing on databases created by an
- *  earlier schema version. */
+ *  earlier schema version, and backfill the new status fields from the
+ *  legacy single `status` column. */
 function migrate(db: Database.Database): void {
   const columns = db
     .prepare("PRAGMA table_info(enrollments)")
     .all() as { name: string }[];
-  if (!columns.some((c) => c.name === "approved_at")) {
-    db.exec("ALTER TABLE enrollments ADD COLUMN approved_at TEXT");
-  }
+  const has = (name: string) => columns.some((c) => c.name === name);
+
+  const add = (name: string, ddl: string) => {
+    if (!has(name)) db.exec(`ALTER TABLE enrollments ADD COLUMN ${ddl}`);
+  };
+
+  add("approved_at", "approved_at TEXT");
+  add(
+    "verification_status",
+    "verification_status TEXT NOT NULL DEFAULT 'pending'",
+  );
+  add("payment_status", "payment_status TEXT NOT NULL DEFAULT 'pending'");
+  add("paid_at", "paid_at TEXT");
+  add("activated_at", "activated_at TEXT");
+
+  // Backfill the split status fields from any legacy `status` values.
+  db.exec(`
+    UPDATE enrollments SET payment_status = 'succeeded'
+      WHERE payment_status = 'pending' AND status IN ('paid', 'active');
+    UPDATE enrollments SET payment_status = 'failed'
+      WHERE payment_status = 'pending' AND status = 'payment_failed';
+    UPDATE enrollments SET verification_status = 'verified'
+      WHERE verification_status = 'pending' AND approved_at IS NOT NULL;
+    UPDATE enrollments SET activated_at = updated_at
+      WHERE activated_at IS NULL AND status = 'active';
+    -- Normalize the overall status to the new vocabulary.
+    UPDATE enrollments SET status = 'pending'
+      WHERE status IN ('pending_payment', 'paid', 'payment_failed');
+  `);
 }
 
 function createDb(): Database.Database {
